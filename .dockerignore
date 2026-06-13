@@ -1,0 +1,11 @@
+# Only engine/ and docker/entrypoint.sh are needed in the image.
+selftest/
+docs/
+*.md
+.git/
+**/__pycache__/
+**/*.pyc
+selftest/work/
+selftest/work_fixtures/
+selftest/data/
+out/

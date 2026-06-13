@@ -1,0 +1,9 @@
+# Normalize line endings in the repo. Critical: the container entrypoint is a
+# shell script and MUST be LF, or `#!/bin/sh` breaks inside the Linux image.
+* text=auto eol=lf
+*.sh text eol=lf
+
+# Keep these byte-exact (no EOL/encoding munging).
+*.gz binary
+*.png binary
+*.jpg binary
