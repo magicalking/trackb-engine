@@ -9,6 +9,7 @@ sizes, falls back on encoding, and skips/records binaries.
 import os
 
 from engine import constants as C
+from engine import manifest as manifest_mod
 from engine import normalize
 
 
@@ -16,7 +17,8 @@ class SkillDoc(object):
     """Normalised view of one skill, ready for scanning."""
 
     __slots__ = ("skill_id", "md", "code", "all_text",
-                 "has_zero_width", "bundled_binaries", "truncated", "empty")
+                 "has_zero_width", "bundled_binaries", "truncated", "empty",
+                 "manifest")
 
     def __init__(self, skill_id):
         self.skill_id = skill_id
@@ -27,6 +29,7 @@ class SkillDoc(object):
         self.bundled_binaries = []
         self.truncated = False
         self.empty = True
+        self.manifest = None      # engine.manifest.Manifest (parsed metadata)
 
 
 def discover_skills(input_dir):
@@ -83,6 +86,7 @@ def load_skill(input_dir, skill_id):
 
     md_parts = []
     code_parts = []
+    manifest_files = []
     total_bytes = 0
 
     # Walk deterministically (sorted) so output is reproducible.
@@ -124,6 +128,9 @@ def load_skill(input_dir, skill_id):
             continue
         total_bytes += len(text.encode("utf-8", errors="ignore"))
 
+        if lower in C.MANIFEST_FILENAMES:
+            manifest_files.append((lower, text))
+
         nt = normalize.normalize(text)
         if nt.has_zero_width:
             doc.has_zero_width = True
@@ -139,6 +146,7 @@ def load_skill(input_dir, skill_id):
         combined = combined[:C.MAX_SCAN_CHARS]
         doc.truncated = True
     doc.all_text = combined
+    doc.manifest = manifest_mod.parse(manifest_files, doc.md)
     doc.empty = not (doc.md.strip() or doc.code.strip() or doc.bundled_binaries)
     return doc
 
@@ -157,7 +165,10 @@ def doc_from_text(skill_id, md_text, helpers=None):
         doc.has_zero_width = True
     md_parts = [md_norm.text]
     code_parts = []
+    manifest_files = []
     for name, text in (helpers or []):
+        if name.lower() in C.MANIFEST_FILENAMES:
+            manifest_files.append((name.lower(), text or ""))
         nt = normalize.normalize(text or "")
         if nt.has_zero_width:
             doc.has_zero_width = True
@@ -173,5 +184,6 @@ def doc_from_text(skill_id, md_text, helpers=None):
         combined = combined[:C.MAX_SCAN_CHARS]
         doc.truncated = True
     doc.all_text = combined
+    doc.manifest = manifest_mod.parse(manifest_files, doc.md)
     doc.empty = not (doc.md.strip() or doc.code.strip())
     return doc

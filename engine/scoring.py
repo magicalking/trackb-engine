@@ -9,12 +9,13 @@ against ML over-fitting to a single campaign.
 
 from engine import constants as C
 from engine import ml
+from engine import semantic
 from engine import suppress
 
 
 class ScoreResult(object):
     __slots__ = ("verdict", "r", "ml_score", "fired", "synergy",
-                 "suppress_notes", "ml_boosted")
+                 "suppress_notes", "ml_boosted", "semantic_boosted")
 
     def __init__(self):
         self.verdict = "benign"
@@ -24,6 +25,7 @@ class ScoreResult(object):
         self.synergy = False
         self.suppress_notes = []
         self.ml_boosted = False
+        self.semantic_boosted = False
 
 
 def _dedupe(fired):
@@ -50,8 +52,13 @@ _BAND_ORDER = {"benign": 0, "suspicious": 1, "malicious": 2}
 _ORDER_BAND = {0: "benign", 1: "suspicious", 2: "malicious"}
 
 
-def score(doc, fired):
-    """Combine fired signals + ML into a ScoreResult. Never raises."""
+def score(doc, fired, fast=False):
+    """Combine fired signals + ML into a ScoreResult. Never raises.
+
+    ``fast`` skips the heavy gray-zone semantic model (Phase 5 hook) when the
+    global runtime budget is exhausted; the deterministic rule+ML path is
+    unaffected, so results stay stable under time pressure.
+    """
     res = ScoreResult()
 
     # Suppression first (may drop spurious signals).
@@ -104,9 +111,19 @@ def score(doc, fired):
         verdict = "suspicious"
         ml_boosted = False
 
-    # Priority-sort fired signals for evidence (by AST priority, then weight).
+    # Gray-zone semantic layer: intent-vs-capability mismatch (+ optional ONNX).
+    # Promotes a suspicious verdict upward only, never raises. Skipped when the
+    # global time budget is exhausted (``fast``) to guarantee completion.
+    semantic_boosted = False
+    if not fast and verdict == "suspicious" and semantic.promote(doc, verdict, fired):
+        verdict = "malicious"
+        semantic_boosted = True
+
+    # Sort fired signals for evidence by WEIGHT first (then severity, then id) so
+    # the evidence leads with the same signal that determines the AST category
+    # (see categorize.categorize) -> coherent verdict/category/evidence.
     prio = {c: i for i, c in enumerate(C.AST_PRIORITY)}
-    fired.sort(key=lambda s: (prio.get(s.category, 99), -s.weight, s.id))
+    fired.sort(key=lambda s: (-s.weight, prio.get(s.category, 99), s.id))
 
     res.verdict = verdict
     res.r = r
@@ -115,6 +132,7 @@ def score(doc, fired):
     res.synergy = synergy
     res.suppress_notes = notes
     res.ml_boosted = ml_boosted
+    res.semantic_boosted = semantic_boosted
     return res
 
 

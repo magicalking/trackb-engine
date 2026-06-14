@@ -135,4 +135,44 @@ def scan(doc):
             fired.append(Signal("S_split_logic", d["weight"], d["tier"],
                                 d["category"], normalize.collapse_ws(cm.group(0))))
 
+    # Homoglyph / mixed-script smuggling (Cyrillic/Greek look-alikes in a
+    # would-be-Latin command or URL).
+    hg = normalize.find_homoglyph(doc.all_text)
+    if hg is not None:
+        d = C.DYN_SIGNALS["S_homoglyph"]
+        fired.append(Signal("S_homoglyph", d["weight"], d["tier"],
+                            d["category"], normalize.collapse_ws(hg)[:60]))
+        # Deconfuse and re-run the catalogue: a homoglyph'd "сurl|bash" becomes
+        # a real "curl|bash" the execution-primitive patterns can now catch.
+        deconf = normalize.deconfuse(doc.all_text)
+        for spec, comp in _COMPILED:
+            if spec["kind"] == "single":
+                m = comp.search(deconf)
+                snip = m.group(0) if m else None
+            else:
+                a_re, b_re = comp
+                snip = _cooccur_snippet(deconf, a_re, b_re, spec.get("window"))
+            if snip is not None:
+                fired.append(Signal(spec["id"], spec["weight"], spec["tier"],
+                                    spec["category"], normalize.collapse_ws(snip)))
+
+    # Recursive decode: a real execution/exfil primitive hidden inside a
+    # base64/hex blob (decode-and-rescan).
+    if _PRIMITIVE_RE is not None:
+        for decoded in entropy.iter_decoded_candidates(doc.all_text):
+            pm = _PRIMITIVE_RE.search(decoded)
+            if pm:
+                d = C.DYN_SIGNALS["S_decoded_payload"]
+                fired.append(Signal("S_decoded_payload", d["weight"], d["tier"],
+                                    d["category"],
+                                    normalize.collapse_ws(pm.group(0))[:60]))
+                break
+
+    # Manifest / structural signals (AST03/04/06/07/10): parsed from
+    # manifest.json + frontmatter, independent of the prose/code regex layer.
+    # Lazy import avoids a circular dependency (manifest imports Signal here).
+    from engine import manifest
+    for sig in manifest.scan(doc):
+        fired.append(sig)
+
     return fired

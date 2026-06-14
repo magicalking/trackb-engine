@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 import sys
+import time
 
 from engine import categorize, constants as C, evidence, loader, scoring, signals
 
@@ -34,8 +35,12 @@ def _to_ast_label(category):
     return ""
 
 
-def analyze_doc(doc):
-    """Run the full pipeline on a loaded SkillDoc. Never raises."""
+def analyze_doc(doc, fast=False):
+    """Run the full pipeline on a loaded SkillDoc. Never raises.
+
+    ``fast`` (set when the global time budget is exhausted) tells the scorer to
+    skip the heavy gray-zone semantic model so the run still completes in time.
+    """
     if doc.empty:
         return {
             "skill_id": doc.skill_id,
@@ -45,7 +50,7 @@ def analyze_doc(doc):
             "evidence": C.EMPTY_EVIDENCE,
         }
     fired = signals.scan(doc)
-    res = scoring.score(doc, fired)
+    res = scoring.score(doc, fired, fast=fast)
     category = categorize.categorize(res.verdict, res.fired)
     ev = evidence.build(doc, res, category)
     if not ev:
@@ -59,11 +64,11 @@ def analyze_doc(doc):
     }
 
 
-def analyze_skill(input_dir, skill_id):
+def analyze_skill(input_dir, skill_id, fast=False):
     """Load + analyze one skill_id with full crash isolation."""
     try:
         doc = loader.load_skill(input_dir, skill_id)
-        return analyze_doc(doc)
+        return analyze_doc(doc, fast=fast)
     except Exception as exc:  # noqa: BLE001 - intentional catch-all per skill
         sys.stderr.write("ERROR analyzing %s: %r\n" % (skill_id, exc))
         return {
@@ -82,7 +87,14 @@ def _dump_line(obj):
 
 
 def run(input_dir, output_path):
-    """Process all skills and write results.jsonl atomically. Returns count."""
+    """Process all skills and stream results.jsonl. Returns count.
+
+    Streaming (vs a single atomic write at the end) is deliberate: if the run is
+    killed at the 30-minute wall (§4 "超时按已完成部分计分"), every completed line
+    is already on disk, so the completed portion still scores. A global time
+    budget switches the tail to the fast rule-only path so the run finishes and
+    no skill is left without a result line.
+    """
     skills = loader.discover_skills(input_dir)
 
     out_dir = os.path.dirname(os.path.abspath(output_path))
@@ -91,15 +103,18 @@ def run(input_dir, output_path):
     except OSError:
         pass
 
-    tmp_path = output_path + ".tmp"
+    start = time.monotonic()
     n = 0
-    with open(tmp_path, "w", encoding="utf-8", newline="\n") as fh:
+    with open(output_path, "w", encoding="utf-8", newline="\n") as fh:
         for skill_id in skills:
-            obj = analyze_skill(input_dir, skill_id)
+            fast = (time.monotonic() - start) >= C.MAX_RUNTIME_SECONDS
+            obj = analyze_skill(input_dir, skill_id, fast=fast)
             fh.write(_dump_line(obj))
             fh.write("\n")
             n += 1
-    os.replace(tmp_path, output_path)
+            if n % C.FLUSH_EVERY == 0:
+                fh.flush()
+        fh.flush()
     return n
 
 

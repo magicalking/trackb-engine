@@ -54,6 +54,9 @@ def build(doc, res, category):
     elif res.ml_score >= C.ML_VERYHIGH:
         parts.append(C.ML_NOTE)
 
+    if getattr(res, "semantic_boosted", False):
+        parts.append(C.SEMANTIC_NOTE)
+
     for note in res.suppress_notes:
         parts.append(note)
 

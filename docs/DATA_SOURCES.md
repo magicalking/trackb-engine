@@ -10,9 +10,10 @@
 | `yoonholee/agent-skill-malware` | HF | 347 条 `content`(SKILL.md)+label | 恶/良 | rows API,无需鉴权 | 主语料 | ✅ 已用 |
 | `LittleDinoC/agent-skills` | HF | **61,650** 条真实 SKILL.md(`content`) | 良性 | rows API/parquet,MIT | ⭐ 负类与泛化 | ✅ 已用(取样3000) |
 | `AgentSkillPrivacy/SkillLeakBench` | HF | 520 技能,83 恶意+437 脆弱+分类法 | 标注 | rows API(**仅元数据,无全文**) | 标签/模式词典 | 待用 |
-| `ProtectSkills/MaliciousAgentSkillsBench` | HF+GH | MalSkillBench:98k 清单+157 恶意模式 | 标注 | CSV(**正文需按URL外取,部分脱敏**) | 恶意模式 | 待用(离线不便) |
+| `protectskills/MaliciousAgentSkillsBench` | GH | 98k 清单 + **157 确认恶意**(Pattern/Severity) | 标注 | `data/malicious_skills.csv`,MIT(**正文脱敏**) | 类别分布校验 | ✅ 已用(`fetch_realbench.py`,类别分布校验) |
 | `snyk-labs/toxicskills-goof` | GH | 10 个真实恶意 SKILL.md(独立活动) | 恶意 | GitHub API/raw | 独立真实检验 | ✅ 已用 |
-| 合成恶意(`gen_malicious.py`) | 本地 | 600 去品牌样例,覆盖 AST01/02/05/08/10 | 恶意 | 本地生成(确定性) | ⭐ 正类多样化 | ✅ 已用(480训练+120留出) |
+| 合成恶意(`gen_malicious.py`) | 本地 | **960** 去品牌样例,16 原型,覆盖 AST01/02/03/05/08/10(含 prose 注入/同形字/解码载荷/身份投毒) | 恶意 | 本地生成(确定性) | ⭐ 正类多样化 | ✅ 已用(768训练+192留出) |
+| 合成灰类(`gen_malicious.py`) | 本地 | 160 结构类样例(过度授权/仿冒/弱隔离/更新漂移) | 可疑 | 本地生成 | 类别+灰区评估 | ✅ 已用(留出) |
 | Datadog `malicious-software-packages-dataset` | GH | 28k 恶意包(含 **AI-Skills 切片**+npm/PyPI) | 恶意 | git clone,zip 口令`infected` | AST02 供应链 | 待用 |
 
 ## B. 批量真实良性技能（负类，GitHub 可整库 clone）
@@ -61,4 +62,17 @@
 - `selftest/fetch_malicious_real.py` — 取 `snyk-labs/toxicskills-goof` 真实恶意（独立活动检验）。
 - `selftest/eval_benign.py` — 留出多样化良性误报率/特异度，并归因到具体信号（用于定位过度触发规则）。
 - `selftest/eval_malicious.py` — 留出合成 + 真实恶意召回（按攻击类型），用于定位漏检。
-- `selftest/train_model.py` — 自动并入 `benign_diverse_train.jsonl.gz` + `malicious_synth_train.jsonl.gz` 重训并冻结 `model.json`。
+- `selftest/train_model.py` — 自动并入 `benign_diverse_train.jsonl.gz` + `malicious_synth_train.jsonl.gz` 重训并冻结 `model.json`（GroupKFold 诚实评估 + parity 校验）。
+- `selftest/fetch_realbench.py` — 取 `protectskills/MaliciousAgentSkillsBench` 的 157 例确认恶意标签（Pattern→AST 映射），内存解析 gz 落盘，用于类别分布校验。
+- `selftest/eval_official_like.py` — 官方式留出评测：三类混淆矩阵 + F2(两种 suspicious 计分假设) + 类别精确匹配 + 完成率/时延（统一标尺）。
+- `selftest/calibrate.py` — 阈值网格扫优（BENIGN_MAX/MAL_MIN），目标 `0.5·F2_A+0.3·F2_B+0.2·特异度`（偏召回），选定 18/45。
+
+## G. 设计所依据的研究/开源（方法论出处）
+
+> 以下为本次能力升级（prose 注入检测、manifest 结构化、混淆还原、灰区语义门控、阈值标定）的研究依据，便于复核/whitepaper。
+
+- **OWASP Agentic Skills Top 10**（`OWASP/www-project-agentic-skills-top-10`，CC‑BY‑SA‑4.0）— 权威 AST01–10 定义与每类可静态检测信号（AST03 通配权限/`network:true`/写 SOUL.md·MEMORY.md·AGENTS.md；AST05 不安全反序列化；AST07 语义版本而非 content_hash；AST08 自然语言指令操纵）。引擎类别与之逐一对齐。
+- **SkillSieve**（arXiv 2604.06550）— 分层 triage（L1 纯静态即 0.989 召回）启发本引擎「召回向静态层」+ 灰区门控（L1→L2）。
+- **MalSkillBench**（arXiv 2606.07131）— 指出纯规则/静态在指令级注入上召回崩塌、难点是「权限/行为是否被宣称用途证成」的语义关系 → 据此实现 `semantic.py` 意图×能力不符判别。
+- **Snyk ToxicSkills**（snyk.io/blog/toxicskills…）— 91% 恶意技能将 prompt injection 与代码结合、具体 prose 触发语 → prose 注入信号集来源。
+- **MaliciousAgentSkillsBench**（`protectskills/…`，MIT）— 157 例确认恶意的真实类别分布校验。

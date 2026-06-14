@@ -17,7 +17,10 @@ not blind the detector.
 # r <  BENIGN_MAX            -> benign
 # BENIGN_MAX <= r < MAL_MIN  -> suspicious  (the gray zone)
 # r >= MAL_MIN               -> malicious
-BENIGN_MAX = 20
+# Calibrated on the held-out 3-class set (selftest/calibrate.py): BENIGN_MAX=18
+# maximises a recall-leaning blend of F2_A (malicious-positive) and F2_B
+# (malicious+suspicious-positive) with no loss of benign specificity (0.946).
+BENIGN_MAX = 18
 MAL_MIN = 45
 
 # Bonus when >=2 distinct kill-chain tiers fire together ("the combo is the
@@ -31,6 +34,12 @@ SYNERGY_TIERS = ("A", "B", "C", "D")
 ML_HIGH = 0.80          # ml_score >= this -> bump one band
 ML_VERYHIGH = 0.95      # extreme confidence note only
 
+# Gray-zone semantic layer (engine/semantic.py): only runs on a SUSPICIOUS
+# verdict, only bumps UP, and is fully optional (no-op if absent). It encodes the
+# "intent vs capability" mismatch (a benign-described skill carrying a strong
+# dangerous capability) — the discriminator pure rules/ML miss (MalSkillBench).
+SEMANTIC_PI_THRESHOLD = 0.90   # optional ONNX prompt-injection prob to promote
+
 # Objective used by the threshold sweep in run_selftest (documentation only).
 SWEEP_WEIGHTS = {"f2": 0.6, "specificity": 0.3, "gray_handling": 0.1}
 
@@ -41,6 +50,14 @@ MAX_FILE_BYTES = 2 * 1024 * 1024        # 2 MiB per file
 MAX_SKILL_BYTES = 8 * 1024 * 1024       # 8 MiB across a skill's helper files
 MAX_SCAN_CHARS = 600_000                # cap text handed to regex / ml
 BINARY_NUL_RATIO = 0.01                 # >1% NUL bytes -> treat as binary
+
+# Global runtime budget (seconds). Once exceeded, remaining skills use the fast
+# rule-only path (skip the gray-zone semantic model) so the run always finishes
+# inside the §4 30-minute limit and every skill still gets a result line.
+MAX_RUNTIME_SECONDS = 1680              # 28 min (2 min headroom under 30)
+# Streaming write: flush every N results so a timeout/kill leaves all completed
+# lines on disk (the rubric scores the completed portion -> partial credit).
+FLUSH_EVERY = 25
 
 # File extensions we read as text helpers (besides SKILL.md / *.md).
 TEXT_HELPER_EXT = (
@@ -241,9 +258,90 @@ SIGNALS = [
          pattern=r"(?:author|publisher|maintainer|by|vendor|owner)\s*[:=]\s*['\"「]?\s*"
                  r"(?:anthropic|openai|google|microsoft|amazon|aws|official|verified)\b"),
 
+    # ----- Tier B2: prose / natural-language instruction injection -------- #
+    # The dominant real-world agent-skill attack: hostile instructions in the
+    # SKILL.md prose (or code comments) that hijack the AGENT rather than the
+    # shell. 91% of confirmed malicious skills combine these with code (Snyk
+    # ToxicSkills); pure rule scanners miss them (this is the essence of AST08
+    # "Poor Scanning"). Default category ast08 (prose-only); when a real code
+    # primitive also fires, the evidence-weighted categoriser promotes to ast01.
+    dict(id="S_instruction_override", weight=26, tier="B", category="ast08",
+         scope="all", kind="single",
+         pattern=r"(?:(?:ignore|disregard|forget|override|bypass|skip|do\s+not\s+follow)\s+"
+                 r"(?:all\s+|any\s+|the\s+|your\s+|these\s+|those\s+|previous\s+|prior\s+|"
+                 r"above\s+|earlier\s+|preceding\s+|system\s+|safety\s+|security\s+){0,4}"
+                 r"(?:instruction|prompt|rule|directive|direction|guideline|constraint|policy|"
+                 r"restriction|command|message)s?\b"
+                 r"|(?:ignore|disregard|forget)\s+(?:everything|all|anything)\s+"
+                 r"(?:above|before|prior|preceding|earlier|previously\s+said))"),
+    dict(id="S_role_mode_hijack", weight=22, tier="B", category="ast08",
+         scope="all", kind="single",
+         pattern=r"(?:developer\s+mode|jailbreak(?:\s+mode)?|\bDAN\b|do\s+anything\s+now|"
+                 r"you\s+are\s+now\s+(?:in\s+)?(?:a\s+|an\s+)?(?:developer|debug|admin|root|"
+                 r"unrestricted|god|sudo|dev)\s*mode|"
+                 r"from\s+now\s+on,?\s+you\s+(?:are|will|must|should|shall)\b|"
+                 r"you\s+are\s+no\s+longer\s+(?:bound|restricted|limited|an?\s+ai)|"
+                 r"pretend\s+(?:you\s+are|to\s+be)\b|"
+                 r"act\s+as\s+(?:if\s+)?(?:an?\s+)?(?:unrestricted|jailbroken|uncensored)|"
+                 r"ignore\s+your\s+(?:guidelines|training|programming|safety))"),
+    dict(id="S_safety_neutralization", weight=26, tier="B", category="ast08",
+         scope="all", kind="single",
+         pattern=r"(?:(?:ignore|disable|skip|bypass|turn\s+off|suppress)\s+(?:all\s+|any\s+|the\s+)?"
+                 r"(?:security|safety|content)\s+(?:warning|check|alert|filter|restriction|measure|"
+                 r"protocol|guardrail|policy)s?|"
+                 r"(?:security|safety)\s+(?:warning|check|alert|prompt)s?\s+(?:are|is|can\s+be)\s+"
+                 r"(?:just\s+)?(?:ignored|disabled|a\s+)?(?:test|fake|false|artifacts?|harmless|"
+                 r"safely\s+ignored)|"
+                 r"(?:do\s+not|don['’]?t|never|no\s+need\s+to)\s+(?:warn|alert|notify|tell|inform|"
+                 r"ask|prompt|confirm\s+with)\s+(?:the\s+)?(?:user|human|operator|developer))"),
+    dict(id="S_covert_instruction", weight=24, tier="B", category="ast08",
+         scope="all", kind="single",
+         pattern=r"(?:without\s+(?:telling|informing|notifying|alerting|asking|prompting)\s+"
+                 r"(?:the\s+)?(?:user|human|operator)|"
+                 r"without\s+the\s+user['’]?s?\s+(?:knowledge|consent|awareness|permission|notice)|"
+                 r"do\s+not\s+(?:mention|reveal|disclose|show|display|tell|report|log)\s+"
+                 r"(?:this|that|it|the\s+\w+|any)|"
+                 r"keep\s+(?:this|it)\s+(?:hidden|secret|confidential|between\s+us|to\s+yourself)|"
+                 r"silently\s+(?:run|execute|send|fetch|download|upload|exfiltrate|install|delete))"),
+    # Prose telling the agent to read sensitive data AND ship it out (exfil by
+    # instruction, no syscall trace -> evidence scanners miss it).
+    dict(id="S_data_exfil_instruction", weight=30, tier="C", category="ast01",
+         scope="all", kind="cooccur", window=240,
+         pattern_a=r"(?:read|collect|gather|grab|extract|dump|exfiltrate|steal|copy|access|send|"
+                   r"upload|leak)\b[^\n]{0,50}"
+                   r"(?:credential|secret|api[_\s-]?key|access[_\s-]?token|auth\s+token|password|"
+                   r"private\s+key|\.env\b|environment\s+variable|~/\.ssh|\.aws/credentials|wallet|"
+                   r"seed\s+phrase|mnemonic|MEMORY\.md|SOUL\.md|AGENTS\.md|conversation\s+history|"
+                   r"chat\s+history|system\s+prompt)",
+         pattern_b=r"(?:https?://|curl\b|wget\b|fetch\s*\(|requests\.(?:post|put)|webhook|"
+                   r"(?:send|post|upload|transmit|exfiltrate|forward|email|deliver|report)\b"
+                   r"[^\n]{0,40}(?:to\b|http|webhook|server|endpoint|url|@))"),
+    # Time-bomb / conditional trigger: a delay or environment gate guarding a
+    # payload primitive (evades runtime sandboxes that check immediate behaviour).
+    dict(id="S_conditional_trigger", weight=16, tier="C", category="ast08",
+         scope="all", kind="cooccur", window=200,
+         pattern_a=r"(?:sleep\s+\d{3,}|time\.sleep\s*\(\s*\d{3,}|after\s+\d+\s+(?:day|hour|week)|"
+                   r"if\s+\[?\s*\$?\(?\s*date|datetime\.now|date\s*\+|"
+                   r"\bhostname\b\s*==|\$HOSTNAME|uname[^\n]{0,20}==|"
+                   r"if\s+[^\n]{0,40}\bdate\b[^\n]{0,20}-(?:gt|lt|ge|le|eq))",
+         pattern_b=r"(?:curl|wget|/dev/tcp|base64\s+-{0,2}[dD]\b|nc\s+-[a-z]*e\b|\beval\s*\(|"
+                   r"\bexec\s*\(|subprocess\.|os\.system|requests\.post|webhook|payload|backdoor)"),
+
+    # Write/append to agent identity / memory files (SOUL.md, MEMORY.md,
+    # AGENTS.md, CLAUDE.md, .claude/settings, .cursor/rules) — long-term agent
+    # behaviour tampering / memory poisoning. OWASP lists this under AST03.
+    dict(id="S_identity_file_write", weight=28, tier="D", category="ast03",
+         scope="all", kind="cooccur", window=140,
+         pattern_a=r"(?:SOUL\.md|MEMORY\.md|AGENTS\.md|CLAUDE\.md|GEMINI\.md|"
+                   r"\.claude/(?:settings|config)|\.cursor/rules|\.github/copilot)",
+         pattern_b=r"(?:>>|>\s|\btee\b|\bwrite\b|\bappend\b|cat\s*>|fs\.write|writeFile|"
+                   r"with\s+open\s*\([^)\n]{0,40}['\"]?[wa]\b|echo\b[^\n]{0,40}>>?|"
+                   r"open\s*\([^)\n]{0,40}['\"][wa])"),
+
     # ----- Tier F: obfuscation -------------------------------------------- #
-    # S_high_entropy_blob and S_zero_width are injected by signals.py from the
-    # entropy / normalize layers (not plain regex), see signals.scan().
+    # S_high_entropy_blob, S_zero_width, S_homoglyph and S_decoded_payload are
+    # injected by signals.py from the entropy / normalize / decode layers (not
+    # plain regex), see signals.scan().
 ]
 
 # Weights for the dynamically-injected (non-regex) signals.
@@ -252,7 +350,54 @@ DYN_SIGNALS = {
     "S_zero_width":        dict(weight=22, tier="F", category="ast08"),
     "S_bundled_binary":    dict(weight=18, tier="C", category="ast01"),
     "S_split_logic":       dict(weight=18, tier="L2", category="ast08"),
+    # Mixed-script homoglyph smuggling (Cyrillic/Greek lookalikes inside an
+    # otherwise-Latin command/URL). NFKC does NOT fold these, so they slip past
+    # naive matching. Strong obfuscation indicator (AST08).
+    "S_homoglyph":         dict(weight=18, tier="F", category="ast08"),
+    # A high-entropy blob that, once base64/hex-decoded, contains a real
+    # execution / exfil / persistence primitive: a hidden payload (AST01-grade
+    # RCE delivered via AST08 obfuscation). Tier A so it pairs into synergy.
+    "S_decoded_payload":   dict(weight=30, tier="A", category="ast01"),
 }
+
+# Weights/tiers/categories for manifest.py structural signals (parsed from
+# manifest.json / skill.json / package.json / SKILL.md frontmatter). These are
+# mostly moderate: a lone structural risk lands in "suspicious" (the correct
+# verdict for a merely over-privileged / drifting skill = the gray class), while
+# still supplying the right AST category for explainability.
+MANIFEST_SIGNALS = {
+    "S_over_privileged":      dict(weight=16, tier="E", category="ast03"),
+    "S_unrestricted_network": dict(weight=12, tier="E", category="ast03"),
+    "S_typosquat":            dict(weight=20, tier="E", category="ast04"),
+    "S_metadata_mismatch":    dict(weight=14, tier="E", category="ast04"),
+    "S_weak_isolation":       dict(weight=12, tier="E", category="ast06"),
+    "S_update_drift":         dict(weight=10, tier="E", category="ast07"),
+    "S_cross_platform_reuse": dict(weight=16, tier="E", category="ast10"),
+}
+
+# Manifest filenames recognised across platforms (OpenClaw / Claude / Cursor /
+# VS Code). SKILL.md YAML frontmatter is parsed too (see manifest.py).
+MANIFEST_FILENAMES = (
+    "manifest.json", "skill.json", "plugin.json", "package.json",
+    "mcp.json", "agent.json", "skill.yaml", "skill.yml",
+)
+# Well-known skill/brand names for typosquat (edit-distance) detection. A
+# manifest name within edit-distance 1-2 of one of these (but not equal) is a
+# likely impersonation. Kept short and generic (behaviour, not one campaign).
+KNOWN_SKILL_NAMES = (
+    "anthropic", "claude", "openai", "chatgpt", "github", "copilot", "cursor",
+    "vscode", "google", "gemini", "microsoft", "playwright", "puppeteer",
+    "docker", "kubernetes", "terraform", "stripe", "slack", "notion", "figma",
+    "postgres", "mongodb", "redis", "pandas", "numpy", "requests", "express",
+)
+# Sensitive paths whose direct access (without sandbox) implies weak isolation.
+SENSITIVE_HOST_PATHS = (
+    "~/.ssh", "/.ssh", ".aws/credentials", "~/.config", "/.config",
+    "/etc/passwd", "/etc/shadow", "library/keychains", "appdata",
+    "cookies.sqlite", "login data", "/.gnupg", ".netrc", ".docker/config",
+)
+# Version specifiers that indicate update drift (mutable range, not a lock).
+DRIFT_VERSION_TOKENS = ("latest", "*", "^", "~", ">=", ">", "x")
 
 # Core execution/exfil/persistence primitives used to detect "split logic"
 # (clean SKILL.md but malicious helper script -> evades prose review, AST08).
@@ -369,6 +514,39 @@ EVIDENCE_TEMPLATES = {
         "随 Skill 直接捆绑了可执行二进制（{snip}），无法静态审查其行为。",
     "S_split_logic":
         "SKILL.md 文档表述无害，但辅助脚本中藏有执行/外联原语（{snip}），疑似规避文档审查的分离式载荷。",
+    "S_instruction_override":
+        "正文以“忽略/覆盖先前指令或安全规则”的措辞（{snip}）试图劫持代理，属自然语言提示注入。",
+    "S_role_mode_hijack":
+        "出现“开发者模式/越狱/DAN/从现在起你……”等角色或模式劫持话术（{snip}），诱导代理脱离安全约束。",
+    "S_safety_neutralization":
+        "指示关闭/忽略安全检查或“不要告知用户”（{snip}），属安全机制中和型提示注入。",
+    "S_covert_instruction":
+        "要求在用户不知情下隐蔽执行或隐藏行为（{snip}），疑似隐蔽指令走私。",
+    "S_data_exfil_instruction":
+        "以自然语言指示读取凭据/密钥/对话记录并外发（{snip}），属指令级数据外泄（无系统调用痕迹）。",
+    "S_conditional_trigger":
+        "存在延时/环境条件触发并配合载荷原语（{snip}），疑似规避沙箱即时检测的时间炸弹。",
+    "S_homoglyph":
+        "命令/URL 中混入异形同形字（西里尔/希腊字母伪装，{snip}），用于绕过朴素文本匹配。",
+    "S_decoded_payload":
+        "对内嵌高熵编码块解码后发现真实执行/外联原语（{snip}），属隐藏的混淆载荷。",
+    # --- manifest / structural signals (AST02/03/04/06/07/10) -------------- #
+    "S_over_privileged":
+        "manifest 申请的权限远超用途（通配路径/无限制网络/写身份文件，{snip}），属过度授权。",
+    "S_identity_file_write":
+        "声明可写入代理身份/记忆文件（SOUL.md·MEMORY.md·AGENTS.md·settings，{snip}），可篡改代理长期行为。",
+    "S_unrestricted_network":
+        "manifest 声明无限制网络出口（{snip}），缺少 egress 白名单。",
+    "S_typosquat":
+        "名称与知名 Skill/品牌高度近似（疑似仿冒抢注，{snip}），属不安全元数据。",
+    "S_metadata_mismatch":
+        "元数据声明与正文/能力不一致（{snip}），疑似误导性元数据。",
+    "S_weak_isolation":
+        "以宿主模式直接访问敏感目录且无沙箱/容器隔离声明（{snip}），属弱隔离。",
+    "S_update_drift":
+        "依赖/版本使用可变范围而非锁定哈希（{snip}），存在更新漂移（可被恶意更新偷渡）。",
+    "S_cross_platform_reuse":
+        "单个 Skill 内混合多平台自启动/格式（{snip}），疑似跨平台复用且丢失安全元数据。",
 }
 GENERIC_POSITIVE_TEMPLATE = "命中可疑行为特征（{snip}）。"
 
@@ -380,6 +558,7 @@ FRAME_BENIGN_WEAK = "判定为良性：仅有个别弱信号，未构成有害�
 
 CHAIN_NOTE = "上述信号跨越多个攻击环节，构成完整的“诱导/下载 + 外部托管 + 解码执行”链路。"
 ML_NOTE = "文本统计模型亦判定其行为词分布与已知恶意样本高度相近。"
+SEMANTIC_NOTE = "语义一致性分析发现“声称用途”与“实际危险能力”严重不符（无害描述却携带强危害原语），据此上调判定。"
 SUPPRESS_DEFI_NOTE = "样本具备加密/DeFi 合理业务语境，相关密钥用法已降权处理。"
 SUPPRESS_SECTOOL_NOTE = "样本自述为安全分析/取证用途，相关 shell/base64 用法判为分析行为并降权。"
 ERROR_EVIDENCE = "分析过程中发生内部错误，无法完成完整判定，保守标记为可疑（需人工复核）。"
