@@ -15,11 +15,14 @@
 
 | 字段 | 值 |
 |------|----|
-| `image_ref` | `ghcr.io/magicalking/trackb-engine@sha256:ccb172843aefd7eaa2fc55a693c36bf388cf17ed8311a678e7fd48a32498e390` |
-| `image_digest` | `sha256:ccb172843aefd7eaa2fc55a693c36bf388cf17ed8311a678e7fd48a32498e390` |
+| `image_ref` | `ghcr.io/magicalking/trackb-engine@sha256:b1c79491455f6429b6839c8feb9fbc460b7102390107eadf389cbc44eee79121` |
+| `image_digest` | `sha256:b1c79491455f6429b6839c8feb9fbc460b7102390107eadf389cbc44eee79121` |
 | tag（仅人读，不作排名依据） | `ghcr.io/magicalking/trackb-engine:1.0.0` |
 | 构建来源 | GitHub Actions `.github/workflows/build.yml`（Linux runner，provenance:false 出单一干净 digest） |
-| 提交 commit | `e5e6dfc`（prose 注入 + manifest 分析 + 灰区语义大升级） |
+| 提交 commit | `00054c0`（真实注入语料 + 去合成指纹 + AST05/06+prose 拓宽 + ML_HIGH 0.60 标定） |
+| 提交包 | `trackb-submission/`（v03，submission_id `sub-r0sky-trackb-v03`）→ `trackb-submission-v03.zip` |
+
+> 历史 digest：`ccb172…e390`（v02，commit e5e6dfc）。
 
 > GHCR 包须设为 **Public** 评测方才能匿名拉取。
 
@@ -83,7 +86,7 @@ python -m engine.run_engine --input selftest/work/skills --output out/results.js
   - [ ] `results.jsonl` 每行合法 JSON、UTF‑8、非空行
   - [ ] 仅 5 个字段（`skill_id/verdict/confidence/category/evidence`），无兼容模式历史分数字段
   - [ ] `category` 为大写 `AST01..AST10` 或空串，且不含 `AST09`；`confidence` 在 0.0–1.0
-  - [ ] 镜像用 **digest** 提交（非可变 tag）：`sha256:ccb172…e390`
+  - [ ] 镜像用 **digest** 提交（非可变 tag）：`sha256:b1c794…9121`
   - [ ] 镜像在 `--network none` 下能跑通
   - [ ] 性能在 §4 约束内：4 vCPU / 8GB / 30min（实测 ~11ms/skill、峰值 <1MiB、Token=0，见性能报告）
 
