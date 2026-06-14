@@ -31,7 +31,12 @@ SYNERGY_TIERS = ("A", "B", "C", "D")
 
 # ML fusion: the frozen model only *boosts* recall, it never single-handedly
 # convicts. A high ml_score bumps the verdict up by exactly one band.
-ML_HIGH = 0.80          # ml_score >= this -> bump one band
+# Calibrated 2026-06-14 (selftest/_mlsweep): with the model retrained on REAL
+# injection/jailbreak language, the ML is very conservative on benign (only ~1
+# /1000 holdout skills score >=0.80), so the old 0.80 gate wasted most of its
+# recall. Lowering to 0.60 recovers real-injection recall (held-out malicious
+# full-misses 98->54, F2_B 0.80->0.89) at a tiny specificity cost (0.950->0.943).
+ML_HIGH = 0.60          # ml_score >= this -> bump one band
 ML_VERYHIGH = 0.95      # extreme confidence note only
 
 # Gray-zone semantic layer (engine/semantic.py): only runs on a SUSPICIOUS
@@ -244,9 +249,19 @@ SIGNALS = [
     # ----- Tier E: supply chain / metadata / deserialization -------------- #
     dict(id="S_unsafe_deser", weight=22, tier="E", category="ast05",
          scope="all", kind="single",
-         pattern=r"(?:yaml\.load\s*\((?![^)\n]*Safe)|!!python/object|!!python/name|"
-                 r"\bpickle\.loads?\s*\(|cPickle\.loads|\bmarshal\.loads\b|__reduce__\s*\(|"
+         pattern=r"(?:yaml\.load\s*\((?![^)\n]*Safe)|yaml\.unsafe_load\s*\(|"
+                 r"!!python/object|!!python/module|!!python/name|"
+                 r"\b_?pickle\.loads?\s*\(|cPickle\.loads|"
+                 r"\bdill\.loads?\s*\(|\bcloudpickle\.loads?\s*\(|"
+                 r"\bjoblib\.load\s*\(|\bjsonpickle\.decode\s*\(|"
+                 r"\bmarshal\.loads?\b|\bMarshal\.load\b|__reduce__\s*\(|"
                  r"\bphp\s+unserialize\b|ObjectInputStream)"),
+    # NOTE: kept deliberately narrow. weight=8 means this never flips a verdict
+    # on its own and (since categorize() picks the max-weight signal) its ast02
+    # tag rarely wins anyway, so broadening it to every package manager only
+    # adds benign noise (poetry/conda/docker pull are pervasive in legit skills)
+    # for no detection gain. The strong supply-chain signals are S_typosquat and
+    # the untrusted-index install captured by S_pipe_to_shell.
     dict(id="S_unpinned_dep", weight=8, tier="E", category="ast02",
          scope="all", kind="single",
          pattern=r"(?:pip\s+install\s+(?!-r\b)(?![^\n]*==)[a-z0-9][a-z0-9_.\-]+|"
@@ -267,13 +282,17 @@ SIGNALS = [
     # primitive also fires, the evidence-weighted categoriser promotes to ast01.
     dict(id="S_instruction_override", weight=26, tier="B", category="ast08",
          scope="all", kind="single",
-         pattern=r"(?:(?:ignore|disregard|forget|override|bypass|skip|do\s+not\s+follow)\s+"
+         pattern=r"(?:(?:ignore|disregard|forget|override|bypass|skip|do\s+not\s+follow|"
+                 r"turn\s+off|switch\s+off)\s+"
                  r"(?:all\s+|any\s+|the\s+|your\s+|these\s+|those\s+|previous\s+|prior\s+|"
-                 r"above\s+|earlier\s+|preceding\s+|system\s+|safety\s+|security\s+){0,4}"
+                 r"above\s+|earlier\s+|preceding\s+|system\s+|safety\s+|security\s+|"
+                 r"content\s+|output\s+|ethical\s+|built-?in\s+|default\s+){0,5}"
                  r"(?:instruction|prompt|rule|directive|direction|guideline|constraint|policy|"
-                 r"restriction|command|message)s?\b"
+                 r"restriction|command|message|guardrail|guard\s*rail|filter|protocol)s?\b"
                  r"|(?:ignore|disregard|forget)\s+(?:everything|all|anything)\s+"
-                 r"(?:above|before|prior|preceding|earlier|previously\s+said))"),
+                 r"(?:above|before|prior|preceding|earlier|previously\s+said)"
+                 r"|(?:guideline|rule|restriction|policy|constraint|instruction|guardrail)s?\s+"
+                 r"(?:do\s+not|don['’]?t|no\s+longer|does\s+not|doesn['’]?t)\s+apply)"),
     dict(id="S_role_mode_hijack", weight=22, tier="B", category="ast08",
          scope="all", kind="single",
          pattern=r"(?:developer\s+mode|jailbreak(?:\s+mode)?|\bDAN\b|do\s+anything\s+now|"
@@ -292,8 +311,12 @@ SIGNALS = [
                  r"(?:security|safety)\s+(?:warning|check|alert|prompt)s?\s+(?:are|is|can\s+be)\s+"
                  r"(?:just\s+)?(?:ignored|disabled|a\s+)?(?:test|fake|false|artifacts?|harmless|"
                  r"safely\s+ignored)|"
+                 r"(?:treat|consider|assume|regard)\s+(?:all\s+|any\s+|every\s+|the\s+){0,2}"
+                 r"(?:security|safety|content|policy)\s+(?:warning|check|alert|filter|restriction|"
+                 r"rule)s?\s+(?:as\s+)?(?:already\s+)?(?:passed|cleared|disabled|off|ok|done|"
+                 r"satisfied|harmless)|"
                  r"(?:do\s+not|don['’]?t|never|no\s+need\s+to)\s+(?:warn|alert|notify|tell|inform|"
-                 r"ask|prompt|confirm\s+with)\s+(?:the\s+)?(?:user|human|operator|developer))"),
+                 r"disclose\s+to|report\s+to)\s+(?:the\s+)?(?:user|human|operator|developer))"),
     dict(id="S_covert_instruction", weight=24, tier="B", category="ast08",
          scope="all", kind="single",
          pattern=r"(?:without\s+(?:telling|informing|notifying|alerting|asking|prompting)\s+"
@@ -393,8 +416,9 @@ KNOWN_SKILL_NAMES = (
 # Sensitive paths whose direct access (without sandbox) implies weak isolation.
 SENSITIVE_HOST_PATHS = (
     "~/.ssh", "/.ssh", ".aws/credentials", "~/.config", "/.config",
-    "/etc/passwd", "/etc/shadow", "library/keychains", "appdata",
+    "/etc/passwd", "/etc/shadow", "/etc/sudoers", "library/keychains", "appdata",
     "cookies.sqlite", "login data", "/.gnupg", ".netrc", ".docker/config",
+    "/.kube/config", "id_ed25519", "/dev/mem", "/proc/self/mem", "/root/",
 )
 # Version specifiers that indicate update drift (mutable range, not a lock).
 DRIFT_VERSION_TOKENS = ("latest", "*", "^", "~", ">=", ">", "x")

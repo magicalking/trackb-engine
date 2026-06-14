@@ -76,7 +76,8 @@ def load_rows():
     n_campaign = len(rows)
     import gzip
     counts = {}
-    for fname in ("benign_diverse_train.jsonl.gz", "malicious_synth_train.jsonl.gz"):
+    for fname in ("benign_diverse_train.jsonl.gz", "malicious_synth_train.jsonl.gz",
+                  "inject_real_train.jsonl.gz"):
         path = os.path.join(HERE, "data", fname)
         c = 0
         if os.path.exists(path):
@@ -87,9 +88,11 @@ def load_rows():
                         rows.append(json.loads(line))
                         c += 1
         counts[fname] = c
-    sys.stderr.write("loaded %d campaign + %d diverse-benign + %d synth-malicious\n"
+    sys.stderr.write("loaded %d campaign + %d diverse-benign + %d synth-malicious"
+                     " + %d inject-real\n"
                      % (n_campaign, counts["benign_diverse_train.jsonl.gz"],
-                        counts["malicious_synth_train.jsonl.gz"]))
+                        counts["malicious_synth_train.jsonl.gz"],
+                        counts.get("inject_real_train.jsonl.gz", 0)))
     return rows
 
 

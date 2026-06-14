@@ -33,9 +33,9 @@
 
 | 数据集 | 平台 | 内容 | 许可 | 价值 |
 |------|------|------|------|:--:|
-| `TrustAIRLab/in-the-wild-jailbreak-prompts` | HF | 15,140(1,405 越狱) | MIT | NL 社工信号 |
-| `deepset/prompt-injections` | HF | 662,`text`/`label` | Apache‑2.0 | 注入信号(小) |
-| `jackhhao/jailbreak-classification` | HF | 1,306,均衡 | Apache‑2.0 | 注入信号 |
+| `TrustAIRLab/in-the-wild-jailbreak-prompts` | HF | 15,140(1,405 越狱) | MIT | NL 社工信号 | ✅ 已用(854 正类) |
+| `deepset/prompt-injections` | HF | 662,`text`/`label` | Apache‑2.0 | 注入信号(小) | ✅ 已用(255 正类) |
+| `jackhhao/jailbreak-classification` | HF | 1,306,均衡 | Apache‑2.0 | 注入信号 | ✅ 已用(185 正类) |
 | `darkknight25/Reverse_Shell_Payloads_Dataset` | HF | 反弹shell 载荷(含`obfuscated`旗标) | MIT | 行为/混淆信号 |
 | `bmlien/mitre-bash-commands` | HF | 700,ATT&CK 标注 | 未注明 | 行为词典 |
 | `aelhalili/bash-commands-dataset` | HF | 840 良性命令 | — | 行为负类配重 |
@@ -55,6 +55,8 @@
 - Kaggle(C 部分)：需账号 + `~/.kaggle/kaggle.json`，`kaggle datasets download -d <slug>`。
 - GitHub(B、部分 A)：`git clone`；Datadog zip 口令 `infected`。
 
+> **C 组接入（2026‑06‑14）**：`selftest/fetch_inject.py` 取上述三个 HF 注入/越狱语料的**真实攻击话术**，把每条 NL prompt（正、负）**包裹进去品牌 SKILL.md 模板**（复用 `gen_malicious` 脚手架，正负同壳→壳标签中性，避免「短祈使句=恶意」的风格泄漏），正类→malicious、负类→benign。共 1294 正类(deepset255+jackhhao185+in‑the‑wild854)+1197 负类；落 `inject_real_train.jsonl.gz`(2233=1036 mal+1197 ben)+`inject_real_eval.jsonl.gz`(258 留出正类)。代理极不稳(SSL EOF/429)，靠 10 次指数退避重试拉全；全程 gzip 内存处理(Defender 安全)。目的：把冻结 ML 从「背合成指纹」转向「学真实注入语言」。
+
 ## F. 接入脚本
 
 - `selftest/fetch_extra.py [n]` — 取 `LittleDinoC/agent-skills` 多样化良性，分训练扩充/留出(固定首 1000)两份（gz）。
@@ -64,6 +66,7 @@
 - `selftest/eval_malicious.py` — 留出合成 + 真实恶意召回（按攻击类型），用于定位漏检。
 - `selftest/train_model.py` — 自动并入 `benign_diverse_train.jsonl.gz` + `malicious_synth_train.jsonl.gz` 重训并冻结 `model.json`（GroupKFold 诚实评估 + parity 校验）。
 - `selftest/fetch_realbench.py` — 取 `protectskills/MaliciousAgentSkillsBench` 的 157 例确认恶意标签（Pattern→AST 映射），内存解析 gz 落盘，用于类别分布校验。
+- `selftest/fetch_inject.py` — 取 `deepset/prompt-injections`+`jackhhao/jailbreak-classification`+`TrustAIRLab/in-the-wild-jailbreak-prompts` 真实注入/越狱话术，包裹进去品牌 SKILL.md（正负同壳），分训练增强/留出正类两份（gz）。HF splits 自动发现 + 10 次退避重试。
 - `selftest/eval_official_like.py` — 官方式留出评测：三类混淆矩阵 + F2(两种 suspicious 计分假设) + 类别精确匹配 + 完成率/时延（统一标尺）。
 - `selftest/calibrate.py` — 阈值网格扫优（BENIGN_MAX/MAL_MIN），目标 `0.5·F2_A+0.3·F2_B+0.2·特异度`（偏召回），选定 18/45。
 

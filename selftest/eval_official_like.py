@@ -36,6 +36,7 @@ SOURCES = [
     ("gray_synth_eval.jsonl.gz", "suspicious"),
     ("benign_diverse_eval.jsonl.gz", "benign"),
     ("malicious_real.jsonl.gz", "malicious"),
+    ("inject_real_eval.jsonl.gz", "malicious"),
 ]
 
 

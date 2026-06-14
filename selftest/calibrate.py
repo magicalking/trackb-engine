@@ -34,6 +34,7 @@ SOURCES = [
     ("gray_synth_eval.jsonl.gz", "suspicious"),
     ("benign_diverse_eval.jsonl.gz", "benign"),
     ("malicious_real.jsonl.gz", "malicious"),
+    ("inject_real_eval.jsonl.gz", "malicious"),
 ]
 BMAX_GRID = (8, 10, 12, 15, 18, 20)
 MMIN_GRID = (35, 40, 45, 50)
