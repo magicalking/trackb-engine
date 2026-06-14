@@ -4,12 +4,24 @@
 
 | 内容 | 本仓库对应 | 状态 |
 |------|-----------|------|
-| 容器镜像（固定 `image_digest: sha256:…`） | `docker/Dockerfile` 构建 | 见 §2 |
-| 存储引用 `image_ref` | 推送到镜像仓库后取得 | 见 §2 |
-| 源代码（供审查） | `engine/` + `selftest/` | ✅ |
+| 容器镜像（固定 `image_digest: sha256:…`） | GitHub Actions 构建 → GHCR | ✅ 见 §2 |
+| 存储引用 `image_ref` | GHCR（digest 形式） | ✅ 见 §2 |
+| 源代码（供审查） | `engine/` + `selftest/` + `docker/` | ✅ |
 | 设计说明 | [docs/DESIGN.md](DESIGN.md) | ✅ |
 | 自测报告（deny-all/无出网下跑通） | [docs/SELFTEST_REPORT.md](SELFTEST_REPORT.md) | ✅ |
-| 性能报告（运行时间/峰值内存对照阈值） | [docs/PERFORMANCE_REPORT.md](PERFORMANCE_REPORT.md) | ✅ |
+| 性能报告（运行时间/峰值内存对照约束） | [docs/PERFORMANCE_REPORT.md](PERFORMANCE_REPORT.md) | ✅ |
+
+### 当前提交镜像（填入提交表单）
+
+| 字段 | 值 |
+|------|----|
+| `image_ref` | `ghcr.io/magicalking/trackb-engine@sha256:ccb172843aefd7eaa2fc55a693c36bf388cf17ed8311a678e7fd48a32498e390` |
+| `image_digest` | `sha256:ccb172843aefd7eaa2fc55a693c36bf388cf17ed8311a678e7fd48a32498e390` |
+| tag（仅人读，不作排名依据） | `ghcr.io/magicalking/trackb-engine:1.0.0` |
+| 构建来源 | GitHub Actions `.github/workflows/build.yml`（Linux runner，provenance:false 出单一干净 digest） |
+| 提交 commit | `e5e6dfc`（prose 注入 + manifest 分析 + 灰区语义大升级） |
+
+> GHCR 包须设为 **Public** 评测方才能匿名拉取。
 
 ## 1. 运行接口（与排名一致）
 
@@ -71,9 +83,9 @@ python -m engine.run_engine --input selftest/work/skills --output out/results.js
   - [ ] `results.jsonl` 每行合法 JSON、UTF‑8、非空行
   - [ ] 仅 5 个字段（`skill_id/verdict/confidence/category/evidence`），无兼容模式历史分数字段
   - [ ] `category` 为大写 `AST01..AST10` 或空串，且不含 `AST09`；`confidence` 在 0.0–1.0
-  - [ ] 镜像用 **digest** 提交（非可变 tag）
+  - [ ] 镜像用 **digest** 提交（非可变 tag）：`sha256:ccb172…e390`
   - [ ] 镜像在 `--network none` 下能跑通
-  - [ ] 性能在 `t_max=7200s`/`m_max=16384MB` 内（实测见性能报告）
+  - [ ] 性能在 §4 约束内：4 vCPU / 8GB / 30min（实测 ~11ms/skill、峰值 <1MiB、Token=0，见性能报告）
 
 ## 5. 申诉
 
